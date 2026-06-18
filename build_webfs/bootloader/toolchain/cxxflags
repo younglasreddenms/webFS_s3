@@ -1,0 +1,6 @@
+"-specs=C:/Users/s/coding/ESPIDF/webFS_s3/build_webfs/bootloader/specs/picolibc.specs"
+-mlongcalls
+-fno-builtin-memcpy
+-fno-builtin-memset
+-fno-builtin-bzero
+-fno-rtti
