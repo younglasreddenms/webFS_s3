@@ -27,22 +27,25 @@
 #define APP_WIFI_PASSWORD "11111111"
 #define APP_WIFI_MAX_RETRY 10
 
+#define APP_BITMAP_DIR_PATH APP_STORAGE_BASE_PATH "/bitmap"
 #define APP_MAX_BITMAP_FILES 32
 #define APP_MAX_PATH_LEN 320
-#define APP_SCAN_INTERVAL_MS 3000
 #define APP_BUTTON_POLL_MS 20
 #define APP_BUTTON_DEBOUNCE_MS 50
 
 static const char *TAG = "main";
 
 typedef struct {
-    char paths[APP_MAX_BITMAP_FILES][APP_MAX_PATH_LEN];
-    size_t count;
-} bitmap_file_list_t;
+    char path[APP_MAX_PATH_LEN];
+    uint8_t data[DISPLAY_BITMAP_SIZE];
+} bitmap_image_t;
 
-static bitmap_file_list_t s_bitmap_files;
-static bitmap_file_list_t s_fresh_bitmap_files;
-static uint8_t s_bitmap_buffer[DISPLAY_BITMAP_SIZE];
+typedef struct {
+    bitmap_image_t images[APP_MAX_BITMAP_FILES];
+    size_t count;
+} bitmap_store_t;
+
+static bitmap_store_t s_bitmap_store;
 
 static esp_err_t app_get_storage_info(const void *ctx, size_t *total, size_t *used)
 {
@@ -187,58 +190,45 @@ cleanup:
     return ok;
 }
 
-static bool bitmap_list_contains(const bitmap_file_list_t *list, const char *path, size_t *index)
+static void bitmap_store_load_once(bitmap_store_t *store)
 {
-    for (size_t i = 0; i < list->count; i++) {
-        if (strcmp(list->paths[i], path) == 0) {
-            if (index) {
-                *index = i;
-            }
-            return true;
-        }
-    }
+    memset(store, 0, sizeof(*store));
 
-    return false;
-}
-
-static void scan_bitmap_dir(const char *dir_path, bitmap_file_list_t *list, int depth)
-{
-    if (depth > 4 || list->count >= APP_MAX_BITMAP_FILES) {
-        return;
-    }
-
-    DIR *dir = opendir(dir_path);
+    DIR *dir = opendir(APP_BITMAP_DIR_PATH);
     if (!dir) {
+        ESP_LOGW(TAG, "Bitmap directory not found: %s", APP_BITMAP_DIR_PATH);
         return;
     }
 
     struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL && list->count < APP_MAX_BITMAP_FILES) {
+    while ((entry = readdir(dir)) != NULL && store->count < APP_MAX_BITMAP_FILES) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
 
         char path[APP_MAX_PATH_LEN];
         struct stat st;
-        if (!append_path(path, sizeof(path), dir_path, entry->d_name) || stat(path, &st) != 0) {
+        if (!append_path(path, sizeof(path), APP_BITMAP_DIR_PATH, entry->d_name) || stat(path, &st) != 0) {
             continue;
         }
 
-        if (S_ISDIR(st.st_mode)) {
-            scan_bitmap_dir(path, list, depth + 1);
-        } else if (path_has_c_extension(path) && bitmap_file_load(path, NULL)) {
-            strlcpy(list->paths[list->count], path, sizeof(list->paths[list->count]));
-            list->count++;
+        if (S_ISDIR(st.st_mode) || !path_has_c_extension(path)) {
+            continue;
+        }
+
+        bitmap_image_t *image = &store->images[store->count];
+        if (bitmap_file_load(path, image->data)) {
+            strlcpy(image->path, path, sizeof(image->path));
+            store->count++;
+            ESP_LOGI(TAG, "Loaded bitmap %u/%u: %s", (unsigned)store->count,
+                     (unsigned)APP_MAX_BITMAP_FILES, path);
+        } else {
+            ESP_LOGW(TAG, "Skip invalid bitmap file: %s", path);
         }
     }
 
     closedir(dir);
-}
-
-static void bitmap_list_refresh(bitmap_file_list_t *list)
-{
-    memset(list, 0, sizeof(*list));
-    scan_bitmap_dir(APP_STORAGE_BASE_PATH, list, 0);
+    ESP_LOGI(TAG, "Bitmap load complete: %u file(s)", (unsigned)store->count);
 }
 
 static void show_status_text(const char *line0, const char *line1)
@@ -248,16 +238,15 @@ static void show_status_text(const char *line0, const char *line1)
     display_text(1, line1);
 }
 
-static bool show_bitmap_path(const char *path)
+static bool show_bitmap_index(const bitmap_store_t *store, size_t index)
 {
-    if (!bitmap_file_load(path, s_bitmap_buffer)) {
-        ESP_LOGW(TAG, "Invalid bitmap file: %s", path);
-        show_status_text("Bad file", "Upload .c");
+    if (index >= store->count) {
         return false;
     }
 
-    display_bitmap(s_bitmap_buffer);
-    ESP_LOGI(TAG, "Displayed bitmap: %s", path);
+    display_bitmap(store->images[index].data);
+    ESP_LOGI(TAG, "Displayed bitmap %u/%u: %s", (unsigned)(index + 1),
+             (unsigned)store->count, store->images[index].path);
     return true;
 }
 
@@ -265,64 +254,33 @@ static void bitmap_viewer_task(void *arg)
 {
     (void)arg;
 
-    char current_path[APP_MAX_PATH_LEN] = "";
     size_t current_index = 0;
     bool last_pressed = false;
-    TickType_t next_scan = 0;
-    bitmap_file_list_t *files = &s_bitmap_files;
-    bitmap_file_list_t *fresh = &s_fresh_bitmap_files;
+    bitmap_store_t *store = &s_bitmap_store;
 
     display_init();
     ESP_ERROR_CHECK(bsp_button_init());
     show_status_text("WebFS", "Ready");
+    bitmap_store_load_once(store);
+
+    if (store->count == 0) {
+        show_status_text("No image", "bitmap");
+    } else {
+        show_bitmap_index(store, current_index);
+    }
 
     while (true) {
-        TickType_t now = xTaskGetTickCount();
-        if (now >= next_scan) {
-            bitmap_list_refresh(fresh);
-
-            size_t kept_index = 0;
-            bool current_still_exists = current_path[0] != '\0' &&
-                                        bitmap_list_contains(fresh, current_path, &kept_index);
-            bool should_redraw = files->count == 0 && fresh->count > 0;
-
-            *files = *fresh;
-            if (files->count == 0) {
-                current_path[0] = '\0';
-                current_index = 0;
-                show_status_text("No image", "Upload .c");
-            } else if (!current_still_exists) {
-                current_index = 0;
-                strlcpy(current_path, files->paths[current_index], sizeof(current_path));
-                show_bitmap_path(current_path);
-            } else {
-                current_index = kept_index;
-                if (should_redraw) {
-                    show_bitmap_path(current_path);
-                }
-            }
-
-            next_scan = now + pdMS_TO_TICKS(APP_SCAN_INTERVAL_MS);
-        }
-
         bool pressed = bsp_button_get_level() == BSP_BUTTON_ACTIVE_LEVEL;
         if (pressed && !last_pressed) {
             vTaskDelay(pdMS_TO_TICKS(APP_BUTTON_DEBOUNCE_MS));
             if (bsp_button_get_level() == BSP_BUTTON_ACTIVE_LEVEL) {
-                bitmap_list_refresh(files);
-                if (files->count > 0) {
-                    if (current_path[0] != '\0') {
-                        bitmap_list_contains(files, current_path, &current_index);
-                    }
-                    current_index = (current_index + 1) % files->count;
-                    strlcpy(current_path, files->paths[current_index], sizeof(current_path));
-                    show_bitmap_path(current_path);
+                if (store->count > 0) {
+                    current_index = (current_index + 1) % store->count;
+                    show_bitmap_index(store, current_index);
                     ESP_LOGI(TAG, "Switched to %u/%u", (unsigned)(current_index + 1),
-                             (unsigned)files->count);
+                             (unsigned)store->count);
                 } else {
-                    current_path[0] = '\0';
-                    current_index = 0;
-                    show_status_text("No image", "Upload .c");
+                    show_status_text("No image", "bitmap");
                 }
 
                 while (bsp_button_get_level() == BSP_BUTTON_ACTIVE_LEVEL) {
