@@ -1,7 +1,7 @@
 /*
  * BSP layer for SSD1306 OLED (I2C).
  *
- * Physical panel: SDA=GPIO8, SCL=GPIO9, I2C addr=0x3C, 128x64.
+ * Physical panel: SDA=GPIO17, SCL=GPIO18, I2C addr=0x3C, 128x64.
  * Higher display code may expose a rotated 64x128 logical surface.
  */
 
@@ -18,8 +18,8 @@ extern "C" {
 
 #define BSP_OLED_I2C_PORT    I2C_NUM_0
 #define BSP_OLED_I2C_ADDR    0x3C
-#define BSP_OLED_SDA_PIN     GPIO_NUM_33
-#define BSP_OLED_SCL_PIN     GPIO_NUM_32
+#define BSP_OLED_SDA_PIN     GPIO_NUM_17
+#define BSP_OLED_SCL_PIN     GPIO_NUM_18
 #define BSP_OLED_I2C_FREQ_HZ 400000
 #define BSP_OLED_WIDTH       128
 #define BSP_OLED_HEIGHT      64

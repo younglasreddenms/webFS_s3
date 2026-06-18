@@ -1,5 +1,5 @@
 /*
- * BSP layer for user button (GPIO22).
+ * BSP layer for user button (GPIO4).
  *
  * Pure hardware abstraction — GPIO pin definition and basic I/O.
  * Debounce, long/short press detection are application-level logic.
@@ -17,7 +17,7 @@ extern "C" {
 /* --------------------------------------------------------------------------
  * Pin definitions
  * -------------------------------------------------------------------------- */
-#define BSP_BUTTON_GPIO          GPIO_NUM_20
+#define BSP_BUTTON_GPIO          GPIO_NUM_4
 #define BSP_BUTTON_ACTIVE_LEVEL  0            /**< 0 = active-low (button → GND) */
 
 /* --------------------------------------------------------------------------
